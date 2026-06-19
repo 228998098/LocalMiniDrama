@@ -2,12 +2,19 @@
   <div v-if="visible" class="vidu-quota-orb" @mouseenter="hovering = true" @mouseleave="hovering = false">
     <!-- 球体容器 -->
     <div class="orb" :class="{ 'orb--low': isLow, 'orb--loading': loading }">
-      <!-- 液体层（SVG 波浪）-->
+      <!-- 液体层：从球底向上填充，高度=百分比 -->
       <div class="orb-liquid-wrap" :style="liquidWrapStyle">
-        <svg class="orb-wave" viewBox="0 0 120 40" preserveAspectRatio="none">
-          <path :d="wavePath1" class="wave-fill wave-1" />
-          <path :d="wavePath2" class="wave-fill wave-2" />
-        </svg>
+        <!-- 液体主体（填满 wrap）-->
+        <div class="orb-liquid-body"></div>
+        <!-- 液面波浪（贴在液体顶部，无缝循环）-->
+        <div class="orb-wave-track">
+          <svg class="orb-wave" viewBox="0 0 240 20" preserveAspectRatio="none">
+            <path :d="wavePath" class="wave-fill wave-1" />
+          </svg>
+          <svg class="orb-wave orb-wave--back" viewBox="0 0 240 20" preserveAspectRatio="none">
+            <path :d="wavePath2" class="wave-fill wave-2" />
+          </svg>
+        </div>
       </div>
       <!-- 球体高光（伪3D）-->
       <div class="orb-highlight"></div>
@@ -66,16 +73,18 @@ const percent = computed(() => {
 const percentText = computed(() => Math.round(percent.value * 100) + '%')
 const isLow = computed(() => hasData.value && percent.value < 0.2)
 
-// 液体高度：液体从球底填充，高度 = 百分比。液面在球体内的纵向位置。
+// 液体高度：液体从球底填充，高度 = 百分比。wrap 贴球底（bottom:0），高度=百分比，
+// 这样 100% 时 wrap 占满整个球，液体满；50% 时 wrap 占下半球。
 const liquidWrapStyle = computed(() => ({
-  // 液体层高度占球体的百分比；液面位置 = (1-百分比) 从顶部
   height: (percent.value * 100) + '%',
-  top: ((1 - percent.value) * 100) + '%',
+  bottom: '0',
+  top: 'auto',
 }))
 
-// 两条波浪 path（用于波动叠加），用固定波形 + CSS 平移
-const wavePath1 = 'M0,20 Q30,10 60,20 T120,20 V40 H0 Z'
-const wavePath2 = 'M0,20 Q30,30 60,20 T120,20 V40 H0 Z'
+// 无缝波浪 path：viewBox 0 0 240 20，画两个完整周期（0-120, 120-240），
+// 首尾 y 值相同。translateX(-50%) 平移一个周期(120)，第二周期补位，无缝循环。
+const wavePath = 'M0,10 Q30,2 60,10 T120,10 T180,10 T240,10 V20 H0 Z'
+const wavePath2 = 'M0,10 Q30,18 60,10 T120,10 T180,10 T240,10 V20 H0 Z'
 
 const refreshAtText = computed(() => {
   if (!refreshAt.value) return ''
@@ -146,31 +155,54 @@ onBeforeUnmount(() => {
   transform: scale(1.08);
 }
 
-/* 液体层：绝对定位，从球底向上填充 */
+/* 液体层：从球底向上填充，高度=百分比（bottom:0 + height:%） */
 .orb-liquid-wrap {
   position: absolute;
   left: 0;
   width: 100%;
+  bottom: 0;
   overflow: hidden;
-  transition: height 0.8s ease, top 0.8s ease;
+  transition: height 0.8s ease;
+}
+/* 液体主体：填满整个 wrap（纯蓝色背景），100% 时整个球都是液体 */
+.orb-liquid-body {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(180deg, rgba(59, 130, 246, 0.92) 0%, rgba(37, 99, 235, 0.95) 100%);
+}
+/* 液面波浪轨道：贴在液体顶部，溢出隐藏让波浪在液面水平循环 */
+.orb-wave-track {
+  position: absolute;
+  left: 0;
+  top: -10px;
+  width: 100%;
+  height: 20px;
+  overflow: hidden;
 }
 .orb-wave {
   position: absolute;
   left: 0;
-  bottom: 0;
+  top: 0;
   width: 200%;
-  height: 40px;
+  height: 20px;
+  display: block;
+}
+.orb-wave--back {
+  opacity: 0.55;
 }
 .wave-fill {
   fill: #3b82f6;
 }
 .wave-1 {
-  fill: rgba(59, 130, 246, 0.85);
-  animation: wave-move 4s linear infinite;
+  fill: rgba(59, 130, 246, 0.92);
+  animation: wave-move 5s linear infinite;
 }
 .wave-2 {
-  fill: rgba(96, 165, 250, 0.55);
-  animation: wave-move 6s linear infinite reverse;
+  fill: rgba(96, 165, 250, 0.6);
+  animation: wave-move 7s linear infinite reverse;
 }
 @keyframes wave-move {
   0% { transform: translateX(0); }
@@ -178,8 +210,9 @@ onBeforeUnmount(() => {
 }
 
 /* 低额度警告色 */
-.orb--low .wave-1 { fill: rgba(239, 68, 68, 0.85); }
-.orb--low .wave-2 { fill: rgba(248, 113, 113, 0.55); }
+.orb--low .orb-liquid-body { background: linear-gradient(180deg, rgba(239, 68, 68, 0.92) 0%, rgba(220, 38, 38, 0.95) 100%); }
+.orb--low .wave-1 { fill: rgba(239, 68, 68, 0.92); }
+.orb--low .wave-2 { fill: rgba(248, 113, 113, 0.6); }
 
 /* 球体高光（伪3D 玻璃感）*/
 .orb-highlight {
