@@ -21,6 +21,7 @@ const assetRoutes = require('./assets');
 const audioRoutes = require('./audio');
 const promptOverridesRoutes = require('./promptOverrides');
 const sceneModelMapRoutes = require('./sceneModelMap');
+const viduCliRoutes = require('./viduCli');
 
 function setupRouter(cfg, db, log) {
   const r = express.Router();
@@ -310,6 +311,9 @@ function setupRouter(cfg, db, log) {
   r.get('/scene-model-map/:key', sceneModelMap.get);
   r.put('/scene-model-map/:key', sceneModelMap.update);
   r.delete('/scene-model-map/:key', sceneModelMap.delete);
+
+  // ---------- vidu-cli quota ----------
+  r.get('/vidu-cli/quota', viduCliRoutes(db, log));
 
   // 启动时将已有的覆盖加载到 promptI18n 内存缓存
   try {

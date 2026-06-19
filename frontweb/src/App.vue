@@ -1,10 +1,12 @@
 <template>
   <div class="app">
     <router-view />
+    <ViduQuotaOrb />
   </div>
 </template>
 
 <script setup lang="ts">
+import ViduQuotaOrb from '@/components/ViduQuotaOrb.vue'
 </script>
 
 <style>
