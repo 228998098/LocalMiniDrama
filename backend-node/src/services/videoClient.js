@@ -17,6 +17,7 @@ const {
   unsafeDecodeKlingJwtPayload,
   jwtPartLengths,
 } = require('./klingJwt');
+const viduCli = require('./viduCli');
 
 /**
  * ?? provider ??????????api_protocol ??????????
@@ -27,6 +28,7 @@ function inferVideoProtocol(provider) {
   if (p === 'gemini' || p === 'google') return 'gemini';
   if (p === 'volces' || p === 'volcengine' || p === 'volc') return 'volcengine';
   if (p === 'vidu') return 'vidu';
+  if (p === 'vidu_cli' || p === 'viducli') return 'vidu_cli';
   if (p === 'ffir') return 'kling_omni';
   if (p === 'kling' || p === 'klingai') return 'kling';
   if (p === 'jimeng_ai_api') return 'jimeng_ai_api';
@@ -2075,6 +2077,88 @@ async function callViduVideoApi(config, log, opts) {
 }
 
 /**
+ * vidu-cli 视频生成：通过子进程调用 vidu-cli task submit 提交任务。
+ * 与 callViduVideoApi（HTTP 直连 ent/v2）不同，本函数走 CLI 以使用 claw_pass 订阅配额。
+ * 仅负责提交，返回 { task_id } 交由 pollVideoTask 的 vidu_cli 分支轮询。
+ *
+ * CLI model-version 与项目原有 vidu 在线 API 的模型名（viduq2 等）是两套命名，不做映射；
+ * 前端配置时直接填 CLI 原生版本号（3.2 / 3.2_a 等），后端原样传给 --model-version。
+ *
+ * @returns {Promise<{ task_id?: string, status?: string, error?: string }>}
+ */
+async function callViduCliVideoApi(config, log, opts) {
+  const { prompt, model, duration, aspect_ratio, image_url, video_gen_id, files_base_url, storage_local_path } = opts;
+  const modelVersion = model || '3.2';
+  const dur = Math.min(16, Math.max(1, Math.round(Number(duration) || 5)));
+  const ratio = clampToViduAspectRatio(aspect_ratio || '16:9');
+  const hasImage = !!(image_url && String(image_url).trim());
+
+  // 提交参数构造
+  const args = ['task', 'submit', '--schedule-mode', 'claw_pass'];
+  // 类型：有图 img2video，无图 text2video
+  args.push('--type', hasImage ? 'img2video' : 'text2video');
+  args.push('--model-version', String(modelVersion));
+  args.push('--resolution', '1080p');
+  if (!hasImage) {
+    // text2video 需 aspect-ratio；img2video 画幅跟图走，不传
+    args.push('--aspect-ratio', ratio);
+  }
+  const effectivePrompt = (prompt || '').trim();
+  if (effectivePrompt) {
+    args.push('--prompt', effectivePrompt);
+  }
+  // img2video 需 transition（3.1/3.2 必填 pro/speed）；3.2_a 可选。统一传 pro 最稳。
+  if (hasImage) {
+    args.push('--transition', 'pro');
+  }
+  args.push('--duration', String(dur));
+
+  // 参考图处理：复用现有 vidu 的图床上传逻辑，把 localhost 图转公网 URL 再传给 CLI
+  let publicImgUrl = null;
+  if (hasImage) {
+    const rawImgUrl = String(image_url).trim();
+    if (/localhost|127\.0\.0\.1/i.test(rawImgUrl)) {
+      publicImgUrl = await uploadLocalImageToProxy(storage_local_path, rawImgUrl, log, `viducli_vg${video_gen_id}`);
+      if (!publicImgUrl && files_base_url && !/localhost|127\.0\.0\.1/i.test(files_base_url)) {
+        publicImgUrl = (files_base_url || '').replace(/\/$/, '') + rawImgUrl.replace(/^https?:\/\/[^/]+/, '');
+      }
+    } else {
+      publicImgUrl = rawImgUrl;
+    }
+    if (!publicImgUrl) {
+      log.error('[ViduCLI] img2video 参考图无法转为公网 URL', { video_gen_id, raw: rawImgUrl.slice(0, 120) });
+      return { error: 'vidu-cli img2video 参考图无法访问（localhost 且图床失败）' };
+    }
+    args.push('--image', publicImgUrl);
+  }
+
+  log.info('[ViduCLI] task submit 准备', {
+    video_gen_id,
+    type: hasImage ? 'img2video' : 'text2video',
+    model_version: modelVersion,
+    duration: dur,
+    aspect_ratio: ratio,
+    has_image: hasImage,
+    image_url: publicImgUrl ? '(已就绪)' : '(无)',
+    schedule_mode: 'claw_pass',
+  });
+
+  const result = await viduCli.runViduCli(config, args, log);
+  if (!result.ok) {
+    log.error('[ViduCLI] task submit 失败', { video_gen_id, error: result.error });
+    return { error: result.error };
+  }
+
+  const taskId = result.data && (result.data.task_id || result.data.id);
+  if (!taskId) {
+    log.error('[ViduCLI] task submit 无 task_id', { video_gen_id, data: JSON.stringify(result.data).slice(0, 300) });
+    return { error: 'vidu-cli 未返回 task_id' };
+  }
+  log.info('[ViduCLI] task 已创建', { video_gen_id, task_id: taskId });
+  return { task_id: taskId, status: 'created' };
+}
+
+/**
  * 单张参考图：公网 URL 优先（图床 / 已是图床链），失败再 data URL。Veo3 与 xAI 视频共用（与可灵 Omni 一致）。
  * @returns {Promise<{ kind: 'url'|'data', value: string }|null>}
  */
@@ -3495,6 +3579,18 @@ async function callVideoApi(db, log, opts) {
     });
   }
 
+  if (protocol === 'vidu_cli') {
+    return callViduCliVideoApi(config, log, {
+      prompt, model,
+      duration: opts.duration,
+      aspect_ratio,
+      image_url: opts.image_url,
+      video_gen_id: opts.video_gen_id,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+    });
+  }
+
   if (protocol === 'kling') {
     return callKlingVideoApi(config, log, {
       prompt, model,
@@ -3730,6 +3826,98 @@ async function callVideoApi(db, log, opts) {
 }
 
 /**
+ * vidu-cli 视频任务轮询：循环调用 `vidu-cli task get <id>` 查询状态，
+ * success 时用 `--output` 下载到临时目录，再把文件移到项目 storage 返回 /static/ URL。
+ * 与 HTTP 轮询不同：CLI 不带 --output 时返回里无远程 URL，必须下载到本地。
+ *
+ * 注意：CLI 的 ok 可能为 true 但 state 是 failed，必须检查 state 字段。
+ */
+async function pollViduCliVideoTask(config, log, videoGenId, taskId, maxAttempts, intervalMs) {
+  log.info('[ViduCLI poll] 开始轮询', { video_gen_id: videoGenId, task_id: taskId, max_attempts: maxAttempts, interval_ms: intervalMs });
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    try {
+      const pollRound = attempt + 1;
+      // 先查状态（不带 --output，避免未完成时白下载）
+      const stateRes = await viduCli.runViduCli(config, ['task', 'get', String(taskId)], log);
+      if (!stateRes.ok) {
+        log.warn('[ViduCLI poll] 查询失败，本轮跳过', { video_gen_id: videoGenId, round: pollRound, error: stateRes.error });
+        continue;
+      }
+      const data = stateRes.data || {};
+      const state = String(data.state || data.status || '').toLowerCase();
+      log.info('[ViduCLI poll] 状态', { video_gen_id: videoGenId, round: pollRound, state, task_id: taskId });
+
+      if (state === 'failed' || state === 'error' || state === 'canceled') {
+        const errMsg = data.err_code || data.err_msg || data.errMsg || data.message || 'vidu-cli 任务失败';
+        log.warn('[ViduCLI poll] 任务失败', { video_gen_id: videoGenId, state, err_code: data.err_code, err_msg: data.err_msg });
+        return { error: `vidu-cli 视频生成失败：${data.err_code ? data.err_code + ' ' : ''}${errMsg}`.slice(0, 500) };
+      }
+
+      if (state === 'success' || state === 'succeeded' || state === 'completed' || state === 'done') {
+        // 下载媒体文件到临时目录
+        const tmpDir = viduCli.makeCliOutputDir();
+        try {
+          const dlRes = await viduCli.runViduCli(config, ['task', 'get', String(taskId), '--output', tmpDir], log);
+          if (!dlRes.ok) {
+            log.warn('[ViduCLI poll] 下载失败', { video_gen_id: videoGenId, error: dlRes.error });
+            return { error: `vidu-cli 任务成功但下载失败：${dlRes.error}` };
+          }
+          const downloaded = (dlRes.data && dlRes.data.downloaded_files) || [];
+          const mediaFile = viduCli.findMediaInDir(tmpDir) || (downloaded.length > 0 ? downloaded[0] : null);
+          if (!mediaFile || !fs.existsSync(mediaFile)) {
+            log.error('[ViduCLI poll] 未找到下载的媒体文件', { video_gen_id: videoGenId, tmp_dir: tmpDir, downloaded });
+            return { error: 'vidu-cli 任务成功但未找到下载文件' };
+          }
+
+          // 把文件移到项目 storage，返回 /static/ 可访问 URL
+          const videoUrl = await saveViduCliMediaToStorage(mediaFile, videoGenId, log);
+          if (!videoUrl) {
+            return { error: 'vidu-cli 媒体文件保存到项目存储失败' };
+          }
+          log.info('[ViduCLI poll] 视频生成完成', { video_gen_id: videoGenId, video_url: videoUrl, source_file: path.basename(mediaFile) });
+          return { video_url: videoUrl };
+        } finally {
+          viduCli.cleanupDir(tmpDir);
+        }
+      }
+      // processing / queueing / preparation / scheduling → 继续轮询
+    } catch (e) {
+      log.warn('[ViduCLI poll] 轮询异常', { video_gen_id: videoGenId, attempt, error: e.message });
+    }
+  }
+  log.error('[ViduCLI poll] 轮询超时', { video_gen_id: videoGenId, task_id: taskId, max_attempts: maxAttempts });
+  return { error: 'vidu-cli 视频生成轮询超时' };
+}
+
+/**
+ * 把 vidu-cli 下载到临时目录的媒体文件移到项目 storage，返回 /static/ 可访问 URL。
+ * 与项目现有 downloadVideoToLocal 的存储布局保持一致：videos/<name>。
+ */
+async function saveViduCliMediaToStorage(srcFile, videoGenId, log) {
+  try {
+    const cfg = require('../config').loadConfig();
+    const storagePath = path.isAbsolute(cfg.storage?.local_path)
+      ? cfg.storage.local_path
+      : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
+    const dir = path.join(storagePath, 'videos');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const ext = path.extname(srcFile).toLowerCase() || '.mp4';
+    const name = `vg_${videoGenId}_${require('crypto').randomUUID().slice(0, 8)}${ext}`;
+    const dest = path.join(dir, name);
+    fs.copyFileSync(srcFile, dest);
+    const baseUrl = String(cfg.storage?.base_url || '').replace(/\/$/, '');
+    const videoUrl = `${baseUrl}/videos/${name}`;
+    log.info('[ViduCLI] 媒体已保存到项目存储', { video_gen_id: videoGenId, local: `videos/${name}`, url: videoUrl });
+    return videoUrl;
+  } catch (e) {
+    log.error('[ViduCLI] 保存到存储失败', { video_gen_id: videoGenId, error: e.message });
+    return null;
+  }
+}
+
+/**
  * ??????????????????/ChatFire ? ???? DashScope?
  */
 async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 300, intervalMs = 10000) {
@@ -3738,6 +3926,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isDashScope = protocol === 'dashscope';
   const isGemini = protocol === 'gemini';
   const isVidu = protocol === 'vidu';
+  const isViduCli = protocol === 'vidu_cli';
   const isSora = protocol === 'sora';
   const isAgnes = protocol === 'agnes';
   const isKling = protocol === 'kling';
@@ -3760,6 +3949,12 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
     log.warn('[poll] Jimeng AI API 不应进入轮询', { video_gen_id: videoGenId, task_id: taskId });
     return { error: 'Jimeng AI API 为同步返回视频地址，不应进入轮询' };
   }
+
+  // vidu_cli 走子进程 CLI 轮询，与 HTTP fetch 流程完全不同，单独处理
+  if (isViduCli) {
+    return pollViduCliVideoTask(config, log, videoGenId, taskId, maxAttempts, intervalMs);
+  }
+
   const queryUrl = () => buildQueryUrl(config, taskId);
   log.info('[poll] ????', { video_gen_id: videoGenId, task_id: taskId, protocol, poll_url: queryUrl() });
   for (let attempt = 0; attempt < maxAttempts; attempt++) {

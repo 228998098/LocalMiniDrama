@@ -9,6 +9,7 @@ const taskService = require('./taskService');
 const { loadConfig } = require('../config');
 const { postJSONWithTimeout } = require('./aiClient');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
+const viduCli = require('./viduCli');
 
 /** 图生 POST 使用 Node http(s)，默认 10 分钟，避免 undici fetch 大包体/慢链路下模糊失败 */
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
@@ -98,6 +99,7 @@ function inferProtocol(provider, model) {
   if (p === 'kling' || p === 'klingai') return 'kling';
   if (/^kling-/i.test(model || '')) return 'kling';
   if (p === 'agnes' || /agnes-image|apihub\.agnes-ai\.com/i.test(String(model || ''))) return 'agnes';
+  if (p === 'vidu_cli' || p === 'viducli') return 'vidu_cli';
   return 'openai';
 }
 
@@ -515,6 +517,177 @@ async function callKlingImageApi(config, log, opts) {
     }
   }
   return { error: '可灵图片生成超时' };
+}
+
+/**
+ * vidu-cli 图片生成：通过子进程调用 vidu-cli task submit（text2image / reference2image）。
+ * 图片任务为异步：submit 返回 task_id 后需轮询 task get；CLI 不带 --output 时无远程 URL，
+ * 故 success 时用 --output 下载到临时目录，再移到项目 storage 返回 /static/ URL。
+ * 对外仍是同步返回 { image_url }，与其它图片厂商契约一致。
+ *
+ * CLI model-version 用原生图片版本号（3.2_image_2 等），前端直填，后端不做映射。
+ *
+ * @returns {Promise<{ image_url?: string, error?: string }>}
+ */
+async function callViduCliImageApi(config, log, opts) {
+  const { prompt, model, image_gen_id, reference_image_urls, files_base_url, storage_local_path } = opts;
+  const modelVersion = model || '3.2_image_2';
+  const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
+  const hasRef = rawRefs.length > 0;
+
+  const args = ['task', 'submit', '--schedule-mode', 'claw_pass'];
+  // 有参考图用 reference2image，否则 text2image
+  args.push('--type', hasRef ? 'reference2image' : 'text2image');
+  args.push('--model-version', String(modelVersion));
+  // 图片任务分辨率：默认 1080p；CLI 支持 1080p/2k/4k
+  args.push('--resolution', '1080p');
+  // 图片任务要求 duration 0
+  args.push('--duration', '0');
+
+  const effectivePrompt = (prompt || '').trim();
+  if (effectivePrompt) {
+    args.push('--prompt', effectivePrompt);
+  }
+  if (!hasRef) {
+    // text2image 支持 aspect-ratio；reference2image 也可传。统一从 size 推导。
+    const ratio = sizeToViduAspectRatio(opts.size);
+    if (ratio) args.push('--aspect-ratio', ratio);
+  }
+
+  // 参考图处理：localhost 图转公网 URL（CLI 需可访问的 URL 或本地路径）
+  if (hasRef) {
+    for (const rawRef of rawRefs) {
+      let refUrl = String(rawRef).trim();
+      if (/localhost|127\.0\.0\.1/i.test(refUrl)) {
+        const proxyUrl = await uploadService.uploadLocalImageToProxy(storage_local_path, refUrl, log, `viducli_img${image_gen_id}`);
+        if (proxyUrl) {
+          refUrl = proxyUrl;
+        } else if (files_base_url && !/localhost|127\.0\.0\.1/i.test(files_base_url)) {
+          refUrl = (files_base_url || '').replace(/\/$/, '') + refUrl.replace(/^https?:\/\/[^/]+/, '');
+        }
+      }
+      args.push('--image', refUrl);
+    }
+  }
+
+  log.info('[ViduCLI图生] task submit 准备', {
+    image_gen_id,
+    type: hasRef ? 'reference2image' : 'text2image',
+    model_version: modelVersion,
+    has_ref: hasRef,
+    ref_count: rawRefs.length,
+    schedule_mode: 'claw_pass',
+  });
+
+  const submitRes = await viduCli.runViduCli(config, args, log);
+  if (!submitRes.ok) {
+    log.error('[ViduCLI图生] task submit 失败', { image_gen_id, error: submitRes.error });
+    return { error: submitRes.error };
+  }
+  const taskId = submitRes.data && (submitRes.data.task_id || submitRes.data.id);
+  if (!taskId) {
+    log.error('[ViduCLI图生] task submit 无 task_id', { image_gen_id, data: JSON.stringify(submitRes.data).slice(0, 300) });
+    return { error: 'vidu-cli 图片任务未返回 task_id' };
+  }
+  log.info('[ViduCLI图生] task 已创建', { image_gen_id, task_id: taskId });
+
+  // 内部轮询：图片生成通常较快，间隔 4s，最多 60 次（4 分钟）
+  const maxAttempts = 60;
+  const intervalMs = 4000;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    try {
+      const stateRes = await viduCli.runViduCli(config, ['task', 'get', String(taskId)], log);
+      if (!stateRes.ok) {
+        log.warn('[ViduCLI图生] 轮询查询失败，跳过本轮', { image_gen_id, task_id: taskId, attempt, error: stateRes.error });
+        continue;
+      }
+      const data = stateRes.data || {};
+      const state = String(data.state || data.status || '').toLowerCase();
+      log.info('[ViduCLI图生] 轮询状态', { image_gen_id, task_id: taskId, attempt, state });
+
+      if (state === 'failed' || state === 'error' || state === 'canceled') {
+        const errMsg = data.err_code || data.err_msg || data.errMsg || data.message || 'vidu-cli 图片任务失败';
+        log.warn('[ViduCLI图生] 任务失败', { image_gen_id, task_id: taskId, state, err_code: data.err_code });
+        return { error: `vidu-cli 图片生成失败：${data.err_code ? data.err_code + ' ' : ''}${errMsg}`.slice(0, 500) };
+      }
+
+      if (state === 'success' || state === 'succeeded' || state === 'completed' || state === 'done') {
+        const tmpDir = viduCli.makeCliOutputDir();
+        try {
+          const dlRes = await viduCli.runViduCli(config, ['task', 'get', String(taskId), '--output', tmpDir], log);
+          if (!dlRes.ok) {
+            return { error: `vidu-cli 图片任务成功但下载失败：${dlRes.error}` };
+          }
+          const mediaFile = viduCli.findMediaInDir(tmpDir, ['png', 'jpg', 'jpeg', 'webp']);
+          if (!mediaFile || !fs.existsSync(mediaFile)) {
+            log.error('[ViduCLI图生] 未找到下载的图片文件', { image_gen_id, tmp_dir: tmpDir, downloaded: dlRes.data && dlRes.data.downloaded_files });
+            return { error: 'vidu-cli 图片任务成功但未找到下载文件' };
+          }
+          const imageUrl = await saveViduCliImageToStorage(mediaFile, image_gen_id, log);
+          if (!imageUrl) {
+            return { error: 'vidu-cli 图片保存到项目存储失败' };
+          }
+          log.info('[ViduCLI图生] 生成完成', { image_gen_id, image_url: imageUrl });
+          return { image_url: imageUrl };
+        } finally {
+          viduCli.cleanupDir(tmpDir);
+        }
+      }
+      // processing / queueing 等 → 继续
+    } catch (e) {
+      log.warn('[ViduCLI图生] 轮询异常', { image_gen_id, task_id: taskId, attempt, error: e.message });
+    }
+  }
+  return { error: 'vidu-cli 图片生成超时' };
+}
+
+/**
+ * 把 vidu-cli 下载的图片移到项目 storage，返回 /static/ 可访问 URL。
+ */
+async function saveViduCliImageToStorage(srcFile, imageGenId, log) {
+  try {
+    const cfg = loadConfig();
+    const storagePath = path.isAbsolute(cfg.storage?.local_path)
+      ? cfg.storage.local_path
+      : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
+    const dir = path.join(storagePath, 'images');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const ext = path.extname(srcFile).toLowerCase() || '.png';
+    const name = `viducli_img_${imageGenId}_${crypto.randomUUID().slice(0, 8)}${ext}`;
+    const dest = path.join(dir, name);
+    fs.copyFileSync(srcFile, dest);
+    const baseUrl = String(cfg.storage?.base_url || '').replace(/\/$/, '');
+    const imageUrl = `${baseUrl}/images/${name}`;
+    log.info('[ViduCLI] 图片已保存到项目存储', { image_gen_id: imageGenId, local: `images/${name}`, url: imageUrl });
+    return imageUrl;
+  } catch (e) {
+    log.error('[ViduCLI] 图片保存到存储失败', { image_gen_id: imageGenId, error: e.message });
+    return null;
+  }
+}
+
+/**
+ * 把项目的 size（如 1024x1024）转成 vidu-cli 的 aspect-ratio（16:9 等）。
+ * CLI 图片仅支持 4:3, 3:4, 1:1, 9:16, 16:9。
+ */
+function sizeToViduAspectRatio(size) {
+  const s = String(size || '').trim().toLowerCase().replace(/\*/g, 'x');
+  const m = s.match(/^(\d+)\s*x\s*(\d+)$/);
+  if (!m) return '16:9';
+  const w = parseInt(m[1], 10);
+  const h = parseInt(m[2], 10);
+  if (!w || !h) return '16:9';
+  const ratio = w / h;
+  // 匹配 CLI 支持的五种比例
+  const supported = [[16, 9], [9, 16], [1, 1], [4, 3], [3, 4]];
+  let best = '16:9';
+  let bestDiff = Infinity;
+  for (const [a, b] of supported) {
+    const diff = Math.abs(ratio - a / b);
+    if (diff < bestDiff) { bestDiff = diff; best = `${a}:${b}`; }
+  }
+  return best;
 }
 
 /**
@@ -1483,6 +1656,15 @@ async function callImageApi(db, log, opts) {
 
   if (protocol === 'kling') {
     return callKlingImageApi(config, log, {
+      prompt: effectivePrompt, model, size, image_gen_id,
+      reference_image_urls: opts.reference_image_urls,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+    });
+  }
+
+  if (protocol === 'vidu_cli') {
+    return callViduCliImageApi(config, log, {
       prompt: effectivePrompt, model, size, image_gen_id,
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,

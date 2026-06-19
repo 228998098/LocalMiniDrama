@@ -330,6 +330,7 @@
             <el-option label="Sora 中转站（multipart/form-data，seconds+size）" value="sora" />
             <el-option label="Veo3 兼容（JSON，images+enhance_prompt，自动翻译英文）" value="veo3" />
             <el-option label="Vidu 视频" value="vidu" />
+            <el-option label="Vidu CLI（本地 vidu-cli 子进程，claw_pass 订阅额度）" value="vidu_cli" />
             <el-option label="可灵 Omni-Video（官方 api-beijing / ffir 中转，O1 全能）" value="kling_omni" />
             <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
             <el-option label="NanoBanana" value="nano_banana" />
@@ -1311,7 +1312,8 @@ const providerConfigs = {
     { id: 'openai', name: 'OpenAI', models: ['dall-e-3', 'dall-e-2'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'qwen_image', name: '通义千问', models: ['qwen-image-max', 'qwen-image-plus', 'qwen-image'] },
-    { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
+    { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] },
+    { id: 'vidu_cli', name: 'Vidu CLI（订阅额度）', models: ['3.2_image_2', '3.2_pro_m', '3.2_fast_m', '3.1'] }
   ],
   storyboard_image: [
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
@@ -1321,7 +1323,8 @@ const providerConfigs = {
     // { id: 'chatfire', name: 'Chatfire', models: ['nano-banana-pro', 'doubao-seedream-4-5-251128', 'qwen-image'] },
     { id: 'gemini', name: 'Google Gemini', models: ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'] },
     { id: 'openai', name: 'OpenAI', models: ['dall-e-3', 'dall-e-2'] },
-    { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
+    { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'] },
+    { id: 'vidu_cli', name: 'Vidu CLI（订阅额度）', models: ['3.2_image_2', '3.2_pro_m', '3.2_fast_m', '3.1'] }
   ],
   video: [
     { id: 'klingai', name: '可灵官方 Omni (api-beijing.klingai.com)', models: ['kling-video-o1', 'kling-v3-omni'] },
@@ -1348,6 +1351,7 @@ const providerConfigs = {
     { id: 'openai', name: 'OpenAI', models: ['sora-2', 'sora-2-pro'] },
     { id: 'xai', name: 'xAI Grok Imagine', models: ['grok-imagine-video'] },
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-video-v2.0'] },
+    { id: 'vidu_cli', name: 'Vidu CLI（订阅额度）', models: ['3.2', '3.2_a', '3.1', '3.0'] },
   ],
   tts: [
     { id: 'minimax', name: 'MiniMax T2A', models: ['speech-02-hd', 'speech-02-turbo'] },
@@ -1373,6 +1377,7 @@ const providerProtocolMap = {
   klingai: 'kling_omni',
   // video
   vidu: 'vidu',
+  vidu_cli: 'vidu_cli',
   xai: 'xai',
   grok: 'xai',
   minimax: 'openai',
@@ -1399,6 +1404,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'qwen') return 'https://dashscope.aliyuncs.com/compatible-mode/v1'
   if (p === 'nano_banana') return 'https://api.nanobananaapi.ai'
   if (p === 'vidu') return 'https://api.vidu.cn'
+  if (p === 'vidu_cli') return 'https://service.vidu.cn'
   if (p === 'kling') return 'https://api.klingai.com'
   if (p === 'klingai') return 'https://api-beijing.klingai.com'
   if (p === 'ffir') return 'https://ffir.cn'
