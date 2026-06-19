@@ -2077,6 +2077,40 @@ async function callViduVideoApi(config, log, opts) {
 }
 
 /**
+ * 按模型版本裁剪 duration 到 CLI 合法范围。
+ * CLI 约束：3.0→5s（固定）；3.1→2-8；3.2→1-16；3.2_a→4-15。
+ * 超出范围时裁到最近边界，避免 CLI 校验失败。
+ */
+function clampViduCliDuration(raw, modelVersion) {
+  let n = Math.round(Number(raw));
+  if (!Number.isFinite(n) || n <= 0) n = 5;
+  const mv = String(modelVersion || '3.2').toLowerCase();
+  if (mv === '3.0') return 5;                 // 3.0 只能 5s
+  if (mv === '3.1' || mv === '3.1_pro') return Math.min(8, Math.max(2, n));
+  if (mv === '3.2_a') return Math.min(15, Math.max(4, n));
+  // 3.2 及其它默认 1-16
+  return Math.min(16, Math.max(1, n));
+}
+
+/**
+ * 按任务类型+模型版本决定 transition 该传什么（CLI 严格约束，传错会校验失败）。
+ *   text2video: 仅 3.2 传 pro/speed；3.1/3.0 不传
+ *   img2video:  3.1/3.2 必传 pro/speed；3.0 用 creative/stable；3.2_a 传 pro（可选，传了更稳）
+ * 返回 '' 表示不传。
+ */
+function resolveViduCliTransition(taskType, modelVersion) {
+  const mv = String(modelVersion || '3.2').toLowerCase();
+  if (taskType === 'text2video') {
+    return mv === '3.2' ? 'pro' : '';
+  }
+  // img2video
+  if (mv === '3.0') return 'stable';          // 3.0 用 creative/stable，选 stable 更连贯
+  if (mv === '3.1' || mv === '3.2') return 'pro'; // 3.1/3.2 必传 pro/speed
+  if (mv === '3.2_a') return 'pro';           // 3.2_a 可选，传 pro
+  return mv === '3.1_pro' ? '' : 'pro';       // 兜底
+}
+
+/**
  * vidu-cli 视频生成：通过子进程调用 vidu-cli task submit 提交任务。
  * 与 callViduVideoApi（HTTP 直连 ent/v2）不同，本函数走 CLI 以使用 claw_pass 订阅配额。
  * 仅负责提交，返回 { task_id } 交由 pollVideoTask 的 vidu_cli 分支轮询。
@@ -2089,9 +2123,10 @@ async function callViduVideoApi(config, log, opts) {
 async function callViduCliVideoApi(config, log, opts) {
   const { prompt, model, duration, aspect_ratio, image_url, video_gen_id, files_base_url, storage_local_path } = opts;
   const modelVersion = model || '3.2';
-  const dur = Math.min(16, Math.max(1, Math.round(Number(duration) || 5)));
   const ratio = clampToViduAspectRatio(aspect_ratio || '16:9');
   const hasImage = !!(image_url && String(image_url).trim());
+  // duration 按模型版本裁剪到合法范围：3.0→5s；3.1→2-8；3.2→1-16；3.2_a→4-15
+  const dur = clampViduCliDuration(Number(duration) || 5, modelVersion);
 
   // 提交参数构造
   const args = ['task', 'submit', '--schedule-mode', 'claw_pass'];
@@ -2107,9 +2142,13 @@ async function callViduCliVideoApi(config, log, opts) {
   if (effectivePrompt) {
     args.push('--prompt', effectivePrompt);
   }
-  // img2video 需 transition（3.1/3.2 必填 pro/speed）；3.2_a 可选。统一传 pro 最稳。
-  if (hasImage) {
-    args.push('--transition', 'pro');
+  // transition 按模型版本+任务类型决策（CLI 对 transition 有严格约束，传错会校验失败）：
+  //   img2video 3.1/3.2 必传 pro/speed；3.0 用 creative/stable；3.2_a 可选（传 pro）
+  //   text2video 仅 3.2 传 pro/speed；3.1/3.0 不传
+  const taskType = hasImage ? 'img2video' : 'text2video';
+  const transition = resolveViduCliTransition(taskType, modelVersion);
+  if (transition) {
+    args.push('--transition', transition);
   }
   args.push('--duration', String(dur));
 
