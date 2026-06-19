@@ -40,7 +40,14 @@ function runViduCli(config, args, log, opts = {}) {
   return new Promise((resolve) => {
     const bin = DEFAULT_VIDU_CLI_BIN;
     const token = (config && config.api_key) ? String(config.api_key).trim() : '';
-    const baseUrl = (config && config.base_url) ? String(config.base_url).trim().replace(/\/$/, '') : '';
+    // base_url 清洗：CLI 内部会自己拼 /credit/v1/...、/ent/v2/... 等路径前缀，
+    // 故 VIDU_BASE_URL 必须是纯域名根。去掉末尾斜杠及误填的 /v1、/v2 等，
+    // 避免 CLI 拼出 /v1/credit/v1/... 这类重复路径（导致 invalid URL）。
+    const rawBase = (config && config.base_url) ? String(config.base_url).trim() : '';
+    const baseUrl = rawBase
+      .replace(/\/+$/, '')              // 去末尾斜杠
+      .replace(/\/v\d+$/i, '')          // 去末尾误填的 /v1 /v2 等
+      .replace(/\/+$/, '');
 
     if (!token) {
       resolve({ ok: false, error: 'vidu-cli 配置缺少 api_key（VIDU_TOKEN）', stderr: '' });
