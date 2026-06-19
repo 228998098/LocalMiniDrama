@@ -1626,6 +1626,80 @@ function getPropPolishPrompt(cfg) {
 **必须**在同一段内自然包含以下关键约束的中文表述（或等价流畅说法）：单一主体、纯色无缝棚拍背景、无多余物体、无人物、无手、无环境；并融入真实尺度与次要元素要求；末尾再接画风：${styleZh ? styleZh + ' 渲染质感' : '写实产品主图质感'}`;
 }
 
+/**
+ * 判断 prompt 是否为全能模式 multi-beat 格式（含「分镜k：Tk秒：」段落）。
+ * 用于区分经典模式（单段标签拼接）与全能模式（多子分镜段落）。
+ */
+function isUniversalSegmentText(prompt) {
+  const s = String(prompt || '').trim();
+  return /分镜\d+[：:]\s*\d+\s*秒/.test(s);
+}
+
+/**
+ * 3.2_a（全能 Video Pro）专用五段式提示词构造器。
+ * 路线1：复用全能模式已有的 multi-beat 文本（universal_segment_text，含「分镜k：Tk秒：」+ @图片N），
+ * 在其外层套上教程要求的五段式外壳：Mode / Assets Mapping / Final Prompt / Negative Constraints / Generation Settings。
+ *
+ * 不重新生成 Beats（全能模式分镜阶段 AI 已产出高质量多子分镜），只做结构化封装 + Assets 作用标签 + 负面约束。
+ *
+ * @param {object} args
+ * @param {string} args.prompt - 原始 prompt（全能模式 segment 文本 或 经典模式标签拼接）
+ * @param {string} args.model - 模型版本（如 '3.2_a'）
+ * @param {string} [args.videoRatio] - 画幅（如 '16:9'）
+ * @param {number} [args.duration] - 时长秒数
+ * @param {boolean} [args.hasImages] - 是否有参考图（决定 Mode）
+ * @param {Array<{index:number, kind:string, name:string}>} [args.imageSlots] - @图片N 槽位信息，用于 Assets Mapping 作用标签
+ * @returns {string} 五段式提示词；若非 3.2_a 或非全能格式则原样返回
+ */
+function buildVideoProFiveSectionPrompt(args) {
+  const { prompt, model, videoRatio, duration, hasImages, imageSlots } = args || {};
+  // 仅 3.2_a 且 prompt 为全能 multi-beat 格式时套五段式；其余原样返回
+  if (String(model || '').toLowerCase() !== '3.2_a') return prompt;
+  if (!isUniversalSegmentText(prompt)) return prompt;
+
+  // Mode 判定（对齐教程 modes-and-mapping.md）
+  let mode;
+  if (!hasImages) {
+    mode = 'Text-only';
+  } else {
+    const slotCount = Array.isArray(imageSlots) ? imageSlots.length : 0;
+    mode = slotCount >= 2 ? 'All-Reference' : 'First/Last Frame';
+  }
+
+  // Assets Mapping：为每个 @图片N 补作用标签
+  const assetsLines = [];
+  if (Array.isArray(imageSlots) && imageSlots.length > 0) {
+    for (const slot of imageSlots) {
+      const role = slot.kind === 'scene' ? '场景锚定' : '身份锚定';
+      const note = slot.name ? `（${slot.name}）` : '';
+      assetsLines.push(`- @image${slot.index}: ${role}${note}`);
+    }
+  }
+  const assetsBlock = assetsLines.length > 0
+    ? `Assets Mapping:\n${assetsLines.join('\n')}`
+    : 'Assets Mapping:\n- (none)';
+
+  // Final Prompt：直接用全能模式的 multi-beat 文本（已含 分镜k：Tk秒： + @图片N + 对白/解说）
+  const finalPromptBlock = `Final Prompt:\n${prompt.trim()}`;
+
+  // Negative Constraints：基础负面词（对齐教程 ip-safety.md 标准词表）
+  const negativeBlock = `Negative Constraints:\nno watermark, no logo, no subtitles, no on-screen text, no blurry motion, no distorted anatomy, no flickering, no morphing artifacts`;
+
+  // Generation Settings
+  const settingsLines = [];
+  if (videoRatio) settingsLines.push(`Aspect Ratio: ${videoRatio}`);
+  if (duration) settingsLines.push(`Duration: ${duration}s`);
+  const settingsBlock = `Generation Settings:\n${settingsLines.join('\n') || 'Aspect Ratio: 16:9'}`;
+
+  return [
+    `Mode: ${mode}`,
+    assetsBlock,
+    finalPromptBlock,
+    negativeBlock,
+    settingsBlock,
+  ].join('\n\n');
+}
+
 module.exports = {
   getLanguage,
   isEnglish,
@@ -1663,4 +1737,6 @@ module.exports = {
   getLockedSuffix,
   getRegenerateLayoutDescriptionPrompt,
   getRealisticPhysicalScaleContract,
+  isUniversalSegmentText,
+  buildVideoProFiveSectionPrompt,
 };

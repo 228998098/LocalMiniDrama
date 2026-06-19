@@ -18,6 +18,7 @@ const {
   jwtPartLengths,
 } = require('./klingJwt');
 const viduCli = require('./viduCli');
+const promptI18n = require('./promptI18n');
 
 /**
  * ?? provider ??????????api_protocol ??????????
@@ -2121,12 +2122,36 @@ function resolveViduCliTransition(taskType, modelVersion) {
  * @returns {Promise<{ task_id?: string, status?: string, error?: string }>}
  */
 async function callViduCliVideoApi(config, log, opts) {
-  const { prompt, model, duration, aspect_ratio, image_url, video_gen_id, files_base_url, storage_local_path } = opts;
+  const { prompt, model, duration, aspect_ratio, image_url, reference_urls, video_gen_id, files_base_url, storage_local_path } = opts;
   const modelVersion = model || '3.2';
   const ratio = clampToViduAspectRatio(aspect_ratio || '16:9');
+  const rawRefUrls = Array.isArray(reference_urls) ? reference_urls.filter(Boolean) : [];
   const hasImage = !!(image_url && String(image_url).trim());
+  const hasRefs = rawRefUrls.length > 0;
   // duration 按模型版本裁剪到合法范围：3.0→5s；3.1→2-8；3.2→1-16；3.2_a→4-15
   const dur = clampViduCliDuration(Number(duration) || 5, modelVersion);
+
+  // 3.2_a（全能 Video Pro）：当 prompt 为全能模式 multi-beat 格式时，套上五段式外壳
+  // （Mode/Assets Mapping/Final Prompt/Negative Constraints/Generation Settings）。
+  // Beats 复用全能模式分镜阶段 AI 产出的 universal_segment_text，不重新生成。
+  let effectivePrompt = (prompt || '').trim();
+  if (String(modelVersion).toLowerCase() === '3.2_a' && promptI18n.isUniversalSegmentText(effectivePrompt)) {
+    // 由 reference_urls 顺序构造 @图片N 槽位（与全能模式 collectSbOmniReferenceAbsoluteUrls 顺序一致：
+    // 场景主图在前，其后角色主图，最后道具）。槽位 kind 用于 Assets Mapping 作用标签。
+    const imageSlots = rawRefUrls.map((url, i) => ({ index: i + 1, kind: i === 0 ? 'scene' : 'character', name: '' }));
+    const wrapped = promptI18n.buildVideoProFiveSectionPrompt({
+      prompt: effectivePrompt,
+      model: modelVersion,
+      videoRatio: ratio,
+      duration: dur,
+      hasImages: hasRefs || hasImage,
+      imageSlots,
+    });
+    if (wrapped && wrapped !== effectivePrompt) {
+      log.info('[ViduCLI] 3.2_a 套用五段式提示词', { video_gen_id, original_chars: effectivePrompt.length, wrapped_chars: wrapped.length, ref_count: rawRefUrls.length });
+      effectivePrompt = wrapped;
+    }
+  }
 
   // 提交参数构造
   const args = ['task', 'submit', '--schedule-mode', 'claw_pass'];
@@ -2138,7 +2163,6 @@ async function callViduCliVideoApi(config, log, opts) {
     // text2video 需 aspect-ratio；img2video 画幅跟图走，不传
     args.push('--aspect-ratio', ratio);
   }
-  const effectivePrompt = (prompt || '').trim();
   if (effectivePrompt) {
     args.push('--prompt', effectivePrompt);
   }
@@ -3624,6 +3648,7 @@ async function callVideoApi(db, log, opts) {
       duration: opts.duration,
       aspect_ratio,
       image_url: opts.image_url,
+      reference_urls: opts.reference_urls,
       video_gen_id: opts.video_gen_id,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
