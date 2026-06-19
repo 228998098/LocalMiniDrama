@@ -1272,9 +1272,18 @@ CRITICAL RULES:
 5. Structure: [Shot framing] + [Scene/environment] + [Characters' frozen poses/expressions] + [Lighting at this exact instant] + [Atmosphere] + [Style tokens]
 6. Describe characters' POSE and EXPRESSION at peak moment — not their motion arc
 7. Preserve character names exactly as listed in ASSETS (they are reference image anchors)
-8. **Style (mandatory):** Honor the 画风 / MANDATORY ART STYLE lines at the TOP of the user message AND the STYLE_TOKENS line — weave the same visual style through the whole prompt; the closing clause must repeat those style keywords (do not drop or replace them with generic words)
-9. CONTINUITY: If PREV_CONTINUITY_STATE is provided, you MUST maintain consistency with the previous shot:
-   - Match character clothing exactly (same outfit, same accessories)
+8. **Character appearance IRONCLAD RULE (highest priority — any violation is a failure):**
+   - Character appearance may ONLY use FIXED IDENTITY traits (face shape, facial features, hairstyle, skin tone/texture, unique marks, age/gender).
+   - NEVER add, infer, or imply ANY clothing/garment/apparel/accessory/footwear/headwear description anywhere in the prompt (no "suit", "dress", "loungewear", "robe", etc.).
+   - Clothing and accessories are ENTIRELY determined by the reference images (ASSETS). Text prompt MUST contain ZERO clothing-related words.
+   - Only mention glasses/scars/tattoos if they are inherent identity marks; otherwise omit.
+9. **Style (mandatory):** Honor the 画风 / MANDATORY ART STYLE lines at the TOP of the user message AND the STYLE_TOKENS line — weave the same visual style through the whole prompt; the closing clause must repeat those style keywords (do not drop or replace them with generic words)
+10. **Clothing & continuity IRONCLAD RULE:**
+   - If PREV_CONTINUITY_STATE is provided, you MUST **verbatim-match** the character's clothing description from the previous shot (if any).
+   - If the current ACTION does NOT explicitly state "changes clothes / takes off coat / swaps outfit" etc., NEVER change or re-describe clothing.
+   - When no PREV_CONTINUITY_STATE is provided, output ZERO clothing-related words in the prompt.
+   - Reference image visual priority ALWAYS overrides text description.
+11. CONTINUITY (other than clothing): If PREV_CONTINUITY_STATE is provided, you MUST maintain consistency with the previous shot:
    - Respect character body_posture logically (e.g. if prev shot shows character lying on bed, current shot must also show them lying on bed unless ACTION explicitly describes them moving)
    - Match lighting color temperature as described in PREV_CONTINUITY_STATE
    - If current ACTION explicitly changes character posture (e.g. "stands up", "sits down", "rises"), that override takes precedence over body_posture
