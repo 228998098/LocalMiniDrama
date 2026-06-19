@@ -11,15 +11,18 @@ function quota(db, log) {
   return async (req, res) => {
     try {
       // 找 vidu_cli 配置：优先 video 类型，其次 image/storyboard_image
+      // 严格匹配 vidu_cli 配置：不能用 is_default fallback，否则会错抓其他厂商的默认配置
+      // （例如 agnes 也是默认，base_url 指向 apihub.agnes-ai.com，用 vidu token 请求必被拒）。
+      const isViduCli = (c) => {
+        const p = String(c.provider || '').toLowerCase();
+        const proto = String(c.api_protocol || '').toLowerCase();
+        return p === 'vidu_cli' || p === 'viducli' || proto === 'vidu_cli' || proto === 'viducli';
+      };
       const types = ['video', 'image', 'storyboard_image'];
       let config = null;
       for (const t of types) {
         const configs = aiConfigService.listConfigs(db, t) || [];
-        config = configs.find((c) => {
-          const p = String(c.provider || '').toLowerCase();
-          const proto = String(c.api_protocol || '').toLowerCase();
-          return p === 'vidu_cli' || p === 'viducli' || proto === 'vidu_cli' || proto === 'viducli';
-        }) || configs.find((c) => c.is_default && c.is_active);
+        config = configs.find(isViduCli);
         if (config) break;
       }
       if (!config) {
