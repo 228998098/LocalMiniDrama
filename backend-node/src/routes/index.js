@@ -313,7 +313,7 @@ function setupRouter(cfg, db, log) {
   r.delete('/scene-model-map/:key', sceneModelMap.delete);
 
   // ---------- vidu-cli quota ----------
-  r.get('/vidu-cli/quota', viduCliRoutes(db, log));
+  r.use('/vidu-cli', viduCliRoutes(db, log));
 
   // 启动时将已有的覆盖加载到 promptI18n 内存缓存
   try {
