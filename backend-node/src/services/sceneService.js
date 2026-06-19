@@ -238,8 +238,14 @@ async function generateScenePromptOnly(db, log, cfg, sceneId, modelName, style) 
     return { ok: false, error: 'AI返回内容为空' };
   }
 
-  const styleEn = (mergedCfg.style.default_style_en || mergedCfg.style.default_style || '').trim();
+  let styleEn = (mergedCfg.style.default_style_en || mergedCfg.style.default_style || '').trim();
   const styleZh = (mergedCfg.style.default_style_zh || '').trim();
+  // 场景专用画风兜底（default_scene_style）：此前 config.yaml 有定义但代码零引用，用户改了不生效。
+  // 参照 default_prop_style/default_role_style 的做法，把场景风格词追加进 styleEn。
+  const sceneStyleExtra = (mergedCfg.style.default_scene_style || '').trim();
+  if (sceneStyleExtra) {
+    styleEn = styleEn ? `${styleEn}, ${sceneStyleExtra}` : sceneStyleExtra;
+  }
   const polishedPrompt = buildSceneFourViewImagePrompt(fourViewDescription.trim(), styleEn, styleZh);
 
   db.prepare('UPDATE scenes SET polished_prompt = ?, updated_at = ? WHERE id = ?').run(
@@ -293,8 +299,14 @@ async function generateSceneSinglePromptOnly(db, log, cfg, sceneId, modelName, s
     return { ok: false, error: 'AI返回内容为空' };
   }
 
-  const styleEn = (mergedCfg.style.default_style_en || mergedCfg.style.default_style || '').trim();
+  let styleEn = (mergedCfg.style.default_style_en || mergedCfg.style.default_style || '').trim();
   const styleZh = (mergedCfg.style.default_style_zh || '').trim();
+  // 场景专用画风兜底（default_scene_style）：此前 config.yaml 有定义但代码零引用，用户改了不生效。
+  // 参照 default_prop_style/default_role_style 的做法，把场景风格词追加进 styleEn。
+  const sceneStyleExtra = (mergedCfg.style.default_scene_style || '').trim();
+  if (sceneStyleExtra) {
+    styleEn = styleEn ? `${styleEn}, ${sceneStyleExtra}` : sceneStyleExtra;
+  }
   const polishedPrompt = buildSceneSingleImagePrompt(singleViewDescription.trim(), styleEn, styleZh);
 
   db.prepare('UPDATE scenes SET polished_prompt_single = ?, updated_at = ? WHERE id = ?').run(
@@ -352,8 +364,12 @@ async function generateSceneFourViewImage(db, log, cfg, sceneId, modelName, styl
       fourViewDescription = inputText;
     }
 
-    const styleEn = (mergedCfg.style.default_style_en || mergedCfg.style.default_style || '').trim();
+    let styleEn = (mergedCfg.style.default_style_en || mergedCfg.style.default_style || '').trim();
     const styleZh = (mergedCfg.style.default_style_zh || '').trim();
+    const sceneStyleExtra = (mergedCfg.style.default_scene_style || '').trim();
+    if (sceneStyleExtra) {
+      styleEn = styleEn ? `${styleEn}, ${sceneStyleExtra}` : sceneStyleExtra;
+    }
     imagePrompt = buildSceneFourViewImagePrompt(fourViewDescription, styleEn, styleZh);
 
     // 顺带保存，供下次复用
@@ -430,8 +446,12 @@ async function generateSceneSingleImage(db, log, cfg, sceneId, modelName, style)
       singleViewDescription = inputText;
     }
 
-    const styleEn = (mergedCfg.style.default_style_en || mergedCfg.style.default_style || '').trim();
+    let styleEn = (mergedCfg.style.default_style_en || mergedCfg.style.default_style || '').trim();
     const styleZh = (mergedCfg.style.default_style_zh || '').trim();
+    const sceneStyleExtra = (mergedCfg.style.default_scene_style || '').trim();
+    if (sceneStyleExtra) {
+      styleEn = styleEn ? `${styleEn}, ${sceneStyleExtra}` : sceneStyleExtra;
+    }
     imagePrompt = buildSceneSingleImagePrompt(singleViewDescription, styleEn, styleZh);
 
     try {

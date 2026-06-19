@@ -201,20 +201,40 @@ const MOVEMENT = {
   crane_dn:  'crane_dn',  // 降镜
   orbit:     'orbit',     // 环绕
   handheld:  'handheld',  // 手持
+  // 高级运镜（与分镜系统提示词要求的枚举对齐）
+  zoom:             'zoom',             // 变焦
+  roll:             'roll',             // 翻滚
+  whip_pan:         'whip_pan',         // 甩镜
+  spiral:           'spiral',           // 螺旋
+  hitchcock_zoom:   'hitchcock_zoom',   // 希区柯克
+  bullet_time:      'bullet_time',      // 子弹时间
+  dutch_angle_move: 'dutch_angle_move', // 荷兰角+移动
+  dolly_track:      'dolly_track',      // 推+横移
+  slowmo_orbit:     'slowmo_orbit',     // 慢动作环绕
 };
 
 /** 镜头运动 → 英文 prompt */
 const MOVEMENT_DESC = {
-  static:   'static locked shot, no camera movement, tripod-mounted',
-  push:     'slow push-in dolly shot, camera gradually moves closer to subject',
-  pull:     'pull-back dolly shot, camera gradually moves away from subject',
-  pan:      'horizontal pan shot, camera sweeps laterally from side to side',
-  tilt:     'vertical tilt shot, camera pivots up or down',
-  tracking: 'tracking shot, camera follows subject movement, smooth motion',
-  crane_up: 'crane up shot, camera rises vertically, revealing wider scene',
-  crane_dn: 'crane down shot, camera descends vertically',
-  orbit:    'orbiting arc shot, camera circles around subject',
-  handheld: 'handheld shot, subtle natural camera shake, documentary feel',
+  static:           'static locked shot, no camera movement, tripod-mounted',
+  push:             'slow push-in dolly shot, camera gradually moves closer to subject',
+  pull:             'pull-back dolly shot, camera gradually moves away from subject',
+  pan:              'horizontal pan shot, camera sweeps laterally from side to side',
+  tilt:             'vertical tilt shot, camera pivots up or down',
+  tracking:         'tracking shot, camera follows subject movement, smooth motion',
+  crane_up:         'crane up shot, camera rises vertically, revealing wider scene',
+  crane_dn:         'crane down shot, camera descends vertically',
+  orbit:            'orbiting arc shot, camera circles around subject',
+  handheld:         'handheld shot, subtle natural camera shake, documentary feel',
+  // 高级运镜（与分镜系统提示词要求的枚举对齐，此前缺失导致 movementToPrompt 返回 null）
+  zoom:             'zoom shot, focal length changes in-frame, perspective compresses or expands',
+  roll:             'camera roll, frame rotates around lens axis, disorienting spin',
+  whip_pan:         'rapid whip pan, fast horizontal swish, temporal jump or chaos',
+  spiral:           'spiral shot, ascending or descending while orbiting, dreamlike or crushing motion',
+  hitchcock_zoom:   'dolly zoom (vertigo effect), camera pushes in while lens zooms out (or reverse), spatial distortion expressing terror or disorientation',
+  bullet_time:      'bullet time, orbit combined with extreme slow-motion, subject near-frozen while background spins rapidly, captures peak dramatic moment',
+  dutch_angle_move: 'dutch angle with movement, tilted frame combined with pan or orbit, mental breakdown or world-collapse sensation',
+  dolly_track:      'dolly track, combined push and lateral movement, complex emotional progression',
+  slowmo_orbit:     'slow-motion orbit, camera circles subject in extreme slow-motion, time-freezing dramatic instant',
 };
 
 /** 中文关键字 → movement 枚举 */
@@ -229,6 +249,16 @@ const ZH_MOVEMENT_MAP = [
   { keys: ['降镜', '向下', 'crane down'],                            val: 'crane_dn' },
   { keys: ['环绕', '绕', 'orbit', 'arc'],                           val: 'orbit'    },
   { keys: ['手持', 'handheld'],                                      val: 'handheld' },
+  // 高级运镜中文映射
+  { keys: ['变焦', 'zoom'],                                          val: 'zoom'             },
+  { keys: ['翻滚', 'roll'],                                          val: 'roll'             },
+  { keys: ['甩镜', '甩', 'whip pan', 'whip_pan'],                    val: 'whip_pan'         },
+  { keys: ['螺旋', 'spiral'],                                        val: 'spiral'           },
+  { keys: ['希区柯克', '眩晕', 'vertigo', 'hitchcock'],              val: 'hitchcock_zoom'   },
+  { keys: ['子弹时间', 'bullet time', 'bullet_time'],                val: 'bullet_time'      },
+  { keys: ['荷兰角', '倾斜', 'dutch'],                               val: 'dutch_angle_move' },
+  { keys: ['推横移', 'dolly track', 'dolly_track'],                  val: 'dolly_track'      },
+  { keys: ['慢动作环绕', '慢速环绕', 'slowmo orbit', 'slowmo_orbit'], val: 'slowmo_orbit'    },
 ];
 
 /**
