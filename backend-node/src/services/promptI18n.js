@@ -1395,6 +1395,42 @@ If CURRENT_UNIVERSAL_SEGMENT is non-empty, preserve narrative beats but rewrite 
 }
 
 /**
+ * 经典分镜（单参考图 img2video）视频提示词「润色」system prompt。
+ * storyboards.js polishClassicVideoPromptStream 调用：把分镜事实 + 邻镜 + 首帧锚点 + 当前草稿
+ * 润色成单段、可直接送图生视频模型（可灵/Vidu/Seedance 等）的专业提示词。
+ * 与 getUniversalOmniPolishPrompt（全能多图模式）对应，本函数服务于经典单图模式。
+ */
+function getClassicVideoPromptPolishPrompt() {
+  return `You are a senior film post-production prompt engineer specializing in image-to-video (single reference still) generation for vertical short dramas.
+
+TASK: Re-author the user's CURRENT storyboard shot into ONE single paragraph of professional, model-ready video prompt (Chinese), to be sent to an img2video model (e.g. Kling, Vidu, Seedance). The first frame is ALREADY locked by the reference still — your text governs motion, rhythm, camera intent, sound-image cues, and visual atmosphere ONLY.
+
+INPUT CONTEXT you will receive in the USER message:
+- PROJECT / SHOT_SEQUENCE / VIDEO_RATIO — identity and target aspect.
+- FULL_EPISODE_SCRIPT — for character relationships, causality, tone; DO NOT invent plot absent from script + STORYBOARD_FIELDS.
+- NEIGHBOR_PREV / NEIGHBOR_NEXT — for entry/exit continuity; no redundant retelling of the previous shot, no spoiling the next shot's unshown events.
+- STORYBOARD_FIELDS — structured facts (scene, action, dialogue, narration, result, shot_type, angle, movement, atmosphere, emotion, music, sfx, duration).
+- REQUIRED_COVERAGE_DIGEST — every "- 维度：" line listed here MUST have its semantics reflected in your output; you may fuse with neighbors/script narratively, but MUST NOT omit facts, MUST NOT alter dialogue meaning, MUST NOT change the duration seconds.
+- FIRST_FRAME_VISUAL_ANCHOR — the English/Chinese image-prompt summary of the reference still. Motion MUST stay consistent with this; DO NOT change costume, facial features, era, or scene.
+- AUTO_COMPOSED_VIDEO_PROMPT — programmatic field-assembled prompt, serves as the factual baseline.
+- CURRENT_VIDEO_DRAFT — the user's current video_prompt; polish ON TOP of it when present.
+- RETENTION_CLAUSES_FROM_SOURCE — sentence-level "tagged clauses" split from CURRENT_VIDEO_DRAFT / AUTO_COMPOSED. EVERY information point in EACH clause (music, sfx layers, emotion intensity values, FULL parenthesized English camera/depth/perspective descriptors, =VideoRatio framing) MUST appear in your output. You may reorder and rephrase connective tissue, but MUST NOT merge multiple clauses into vague atmosphere such that an information category disappears.
+- VISUAL_STYLE — internalize into the output; both Chinese mood prose and English texture words are welcome.
+
+OUTPUT CONTRACT (hard rules):
+1. Output EXACTLY ONE single paragraph of Chinese prose (no headings, no bullet lists, no markdown, no "画面风格:" label prefix). It must be directly pasteable into an img2video model.
+2. FACTUAL INVARIANCE: scene, dialogue (verbatim inside 「」), narration, result, duration seconds, shot_type, camera angle, movement — all facts from STORYBOARD_FIELDS + REQUIRED_COVERAGE_DIGEST + RETENTION_CLAUSES MUST be preserved unchanged. You may rephrase connective words and ordering, not facts.
+3. DIALOGUE: when DIALOGUE / 对话 is present, it MUST appear verbatim inside 「」; never summarize speech away (e.g. never write「说完台词」or「他选择了一个亿」without the actual quoted words). Silent shots: state 无对白 explicitly.
+4. DURATION: the stated seconds MUST equal STORYBOARD_FIELDS duration; do not invent a different length.
+5. MOTION CONSISTENCY: camera movement and action must agree with FIRST_FRAME_VISUAL_ANCHOR and STORYBOARD_FIELDS movement; do not change costume, face, era, or scene setting.
+6. ASPECT: preserve the =VideoRatio framing token/semantics from RETENTION_CLAUSES.
+7. ANTI-STAGNATION (re-polish): the user may click polish repeatedly. Each response MUST be SUBSTANTIALLY rephrased — same facts, same seconds, but NOT a near-duplicate of CURRENT_VIDEO_DRAFT differing only in punctuation or a few filler words. Deliberately vary verbs, clause order, and camera wording while preserving meaning.
+8. CONTINUITY: align entry with NEIGHBOR_PREV and exit/hint with NEIGHBOR_NEXT; do not over-narrate neighbors.
+9. SHORT-DRAMA RHYTHM: vertical-drama density — stakes, micro-expressions, blocking, camera motion; keep prose tight and cinematic, not novelistic.
+10. No preamble, no explanation, no trailing notes — output the single paragraph only.`;
+}
+
+/**
  * 全能片段「润色」模式：在 getUniversalOmniSegmentPrompt 的硬性格式与参考图规则之上，强化短剧叙事与上下文一致。
  */
 function getUniversalOmniPolishPrompt() {
@@ -1607,6 +1643,7 @@ module.exports = {
   getImagePolishPrompt,
   getUniversalOmniSegmentPrompt,
   getUniversalOmniPolishPrompt,
+  getClassicVideoPromptPolishPrompt,
   getContinuitySnapshotPrompt,
   getIdentityAnchorsPrompt,
   getPropPolishPrompt,
