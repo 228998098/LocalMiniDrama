@@ -40,6 +40,14 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
 
+// 额度查询用独立 axios 实例，绕过全局 request 拦截器的 ElMessage 弹窗
+// （每分钟后台刷新，失败时静默降级，不打扰用户）
+const quotaRequest = axios.create({
+  baseURL: '/api/v1',
+  timeout: 30000,
+  headers: { 'Content-Type': 'application/json' },
+})
+
 const REFRESH_INTERVAL = 60 * 1000 // 每 1 分钟刷新
 
 const loading = ref(true)
@@ -80,8 +88,9 @@ const refreshAtText = computed(() => {
 async function fetchQuota() {
   loading.value = true
   try {
-    const { data } = await axios.get('/api/vidu-cli/quota')
-    const d = data?.data || data
+    // 后端 response.success 返回 { success, data }；这里取 data 字段
+    const { data: resp } = await quotaRequest.get('/vidu-cli/quota')
+    const d = resp?.data || resp
     if (d && d.available && d.daily_quota_seconds != null) {
       hasData.value = true
       remainSeconds.value = Number(d.remain_seconds) || 0
@@ -92,8 +101,9 @@ async function fetchQuota() {
       unavailableMsg.value = (d && d.message) || '未配置 vidu-cli'
     }
   } catch (e) {
+    // 额度查询失败不打扰用户（后台静默降级），仅控件显示失败
     hasData.value = false
-    unavailableMsg.value = '查询失败：' + (e.message || e)
+    unavailableMsg.value = '查询失败'
   } finally {
     loading.value = false
   }
