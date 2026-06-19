@@ -2097,11 +2097,16 @@ function clampViduCliDuration(raw, modelVersion) {
  * 按任务类型+模型版本决定 transition 该传什么（CLI 严格约束，传错会校验失败）。
  *   text2video: 仅 3.2 传 pro/speed；3.1/3.0 不传
  *   img2video:  3.1/3.2 必传 pro/speed；3.0 用 creative/stable；3.2_a 传 pro（可选，传了更稳）
+ *   character2video: 3.2 必传 pro/speed；3.2_a 不传；3.0/3.1/3.1_pro 不传
  * 返回 '' 表示不传。
  */
 function resolveViduCliTransition(taskType, modelVersion) {
   const mv = String(modelVersion || '3.2').toLowerCase();
   if (taskType === 'text2video') {
+    return mv === '3.2' ? 'pro' : '';
+  }
+  if (taskType === 'character2video') {
+    // CLI 约束：character2video 3.2 必传 pro/speed；3.2_a 不传；3.0/3.1/3.1_pro 不传
     return mv === '3.2' ? 'pro' : '';
   }
   // img2video
@@ -2154,55 +2159,70 @@ async function callViduCliVideoApi(config, log, opts) {
   }
 
   // 提交参数构造
+  // 模式判定：多图(≥1 reference) → character2video；单图(image_url) → img2video；无图 → text2video
+  const useCharacter2video = hasRefs && rawRefUrls.length >= 1;
+  const taskType = useCharacter2video ? 'character2video' : (hasImage ? 'img2video' : 'text2video');
+
   const args = ['task', 'submit', '--schedule-mode', 'claw_pass'];
-  // 类型：有图 img2video，无图 text2video
-  args.push('--type', hasImage ? 'img2video' : 'text2video');
+  args.push('--type', taskType);
   args.push('--model-version', String(modelVersion));
   args.push('--resolution', '1080p');
-  if (!hasImage) {
-    // text2video 需 aspect-ratio；img2video 画幅跟图走，不传
+  // character2video/img2video 画幅跟图走，不传 aspect-ratio；text2video 需传
+  if (taskType === 'text2video') {
     args.push('--aspect-ratio', ratio);
   }
   if (effectivePrompt) {
     args.push('--prompt', effectivePrompt);
   }
-  // transition 按模型版本+任务类型决策（CLI 对 transition 有严格约束，传错会校验失败）：
-  //   img2video 3.1/3.2 必传 pro/speed；3.0 用 creative/stable；3.2_a 可选（传 pro）
-  //   text2video 仅 3.2 传 pro/speed；3.1/3.0 不传
-  const taskType = hasImage ? 'img2video' : 'text2video';
+  // transition 按模型版本+任务类型决策（CLI 对 transition 有严格约束，传错会校验失败）
   const transition = resolveViduCliTransition(taskType, modelVersion);
   if (transition) {
     args.push('--transition', transition);
   }
   args.push('--duration', String(dur));
 
-  // 参考图处理：复用现有 vidu 的图床上传逻辑，把 localhost 图转公网 URL 再传给 CLI
-  let publicImgUrl = null;
-  if (hasImage) {
-    const rawImgUrl = String(image_url).trim();
-    if (/localhost|127\.0\.0\.1/i.test(rawImgUrl)) {
-      publicImgUrl = await uploadLocalImageToProxy(storage_local_path, rawImgUrl, log, `viducli_vg${video_gen_id}`);
-      if (!publicImgUrl && files_base_url && !/localhost|127\.0\.0\.1/i.test(files_base_url)) {
-        publicImgUrl = (files_base_url || '').replace(/\/$/, '') + rawImgUrl.replace(/^https?:\/\/[^/]+/, '');
+  // 参考图处理：复用现有图床上传逻辑（resolveImageInputForOmniAsync），把 localhost 图转公网 URL
+  // character2video：多张 --image（1-7 张，与全能模式 collectSbOmniReferenceAbsoluteUrls 顺序一致）
+  // img2video：单张 --image
+  let imageCount = 0;
+  if (useCharacter2video) {
+    // CLI 限制 image+material 总数 1-7
+    const refsToSend = rawRefUrls.slice(0, 7);
+    for (let i = 0; i < refsToSend.length; i++) {
+      const resolved = await resolveImageInputForOmniAsync(
+        refsToSend[i], files_base_url, storage_local_path, log, video_gen_id, i
+      );
+      if (resolved) {
+        args.push('--image', resolved);
+        imageCount++;
+      } else {
+        log.warn('[ViduCLI] character2video 参考图转公网 URL 失败，跳过', { video_gen_id, index: i, raw: String(refsToSend[i]).slice(0, 80) });
       }
-    } else {
-      publicImgUrl = rawImgUrl;
     }
+    if (imageCount === 0) {
+      log.error('[ViduCLI] character2video 所有参考图均无法转为公网 URL', { video_gen_id, ref_count: rawRefUrls.length });
+      return { error: 'vidu-cli character2video 参考图全部无法访问（图床失败）' };
+    }
+  } else if (hasImage) {
+    const rawImgUrl = String(image_url).trim();
+    const publicImgUrl = await resolveImageInputForOmniAsync(
+      rawImgUrl, files_base_url, storage_local_path, log, video_gen_id, 0
+    );
     if (!publicImgUrl) {
       log.error('[ViduCLI] img2video 参考图无法转为公网 URL', { video_gen_id, raw: rawImgUrl.slice(0, 120) });
       return { error: 'vidu-cli img2video 参考图无法访问（localhost 且图床失败）' };
     }
     args.push('--image', publicImgUrl);
+    imageCount = 1;
   }
 
   log.info('[ViduCLI] task submit 准备', {
     video_gen_id,
-    type: hasImage ? 'img2video' : 'text2video',
+    type: taskType,
     model_version: modelVersion,
     duration: dur,
     aspect_ratio: ratio,
-    has_image: hasImage,
-    image_url: publicImgUrl ? '(已就绪)' : '(无)',
+    image_count: imageCount,
     schedule_mode: 'claw_pass',
   });
 
