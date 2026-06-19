@@ -529,6 +529,50 @@ async function callKlingImageApi(config, log, opts) {
  *
  * @returns {Promise<{ image_url?: string, error?: string }>}
  */
+
+/**
+ * vidu-cli 图片参考图转公网 URL（与视频侧 resolveImageInputForOmniAsync 逻辑对齐）。
+ * CLI --image 仅认 local path / HTTP URL / ssupload，不认 data URL，故 data URL 须转存图床。
+ * 不引入对 videoClient 的依赖（避免循环依赖），用 imageClient 可访问的 uploadService。
+ * @returns {Promise<string|null>} 公网 URL 或 null（失败）
+ */
+async function resolveViduCliImageRef(rawUrl, files_base_url, storage_local_path, log, image_gen_id, index) {
+  const raw = (rawUrl || '').trim();
+  if (!raw) return null;
+  // 公网 HTTP（非 localhost）→ 直接用
+  if (/^https?:\/\//i.test(raw) && !/localhost|127\.0\.0\.1/i.test(raw)) return raw;
+  // data URL → CLI 不认，转存图床
+  if (raw.startsWith('data:')) {
+    const m = raw.match(/^data:([\w/+.-]+);base64,(.+)$/is);
+    if (m) {
+      try {
+        const buf = Buffer.from(m[2].replace(/\s/g, ''), 'base64');
+        const mt = (m[1] || 'image/jpeg').toLowerCase();
+        const mime = mt.includes('png') ? 'image/png' : mt.includes('webp') ? 'image/webp' : 'image/jpeg';
+        const tag = `viducli_img${image_gen_id || '0'}_${index}`;
+        const proxyUrl = await uploadService.uploadToImageProxy(buf, mime, log, tag);
+        if (proxyUrl) return proxyUrl;
+        log.warn('[ViduCLI图生] data URL 转存图床失败', { image_gen_id, index });
+      } catch (e) {
+        log.warn('[ViduCLI图生] data URL 解析失败', { image_gen_id, index, error: e.message });
+      }
+    }
+    return null;
+  }
+  // localhost / 相对路径 → 上传图床
+  if (storage_local_path) {
+    const tag = `viducli_img${image_gen_id || '0'}_${index}`;
+    const proxyUrl = await uploadService.uploadLocalImageToProxy(storage_local_path, raw, log, tag);
+    if (proxyUrl) return proxyUrl;
+    log.warn('[ViduCLI图生] localhost 图上传图床失败，尝试 files_base_url 兜底', { image_gen_id, index });
+  }
+  // files_base_url 兜底（后端可公网访问时）
+  if (files_base_url && !/localhost|127\.0\.0\.1/i.test(files_base_url)) {
+    return (files_base_url || '').replace(/\/$/, '') + raw.replace(/^https?:\/\/[^/]+/, '').replace(/^\//, '/');
+  }
+  return null;
+}
+
 async function callViduCliImageApi(config, log, opts) {
   const { prompt, model, image_gen_id, reference_image_urls, files_base_url, storage_local_path } = opts;
   const modelVersion = model || '3.2_image_2';
@@ -554,19 +598,16 @@ async function callViduCliImageApi(config, log, opts) {
     if (ratio) args.push('--aspect-ratio', ratio);
   }
 
-  // 参考图处理：localhost 图转公网 URL（CLI 需可访问的 URL 或本地路径）
+  // 参考图处理：统一转公网 URL（CLI --image 仅认 local path / HTTP URL / ssupload，
+  // 不认 data URL）。逻辑对齐视频侧 resolveImageInputForOmniAsync，避免两侧不一致。
   if (hasRef) {
-    for (const rawRef of rawRefs) {
-      let refUrl = String(rawRef).trim();
-      if (/localhost|127\.0\.0\.1/i.test(refUrl)) {
-        const proxyUrl = await uploadService.uploadLocalImageToProxy(storage_local_path, refUrl, log, `viducli_img${image_gen_id}`);
-        if (proxyUrl) {
-          refUrl = proxyUrl;
-        } else if (files_base_url && !/localhost|127\.0\.0\.1/i.test(files_base_url)) {
-          refUrl = (files_base_url || '').replace(/\/$/, '') + refUrl.replace(/^https?:\/\/[^/]+/, '');
-        }
+    for (let i = 0; i < rawRefs.length; i++) {
+      const resolved = await resolveViduCliImageRef(rawRefs[i], files_base_url, storage_local_path, log, image_gen_id, i);
+      if (resolved) {
+        args.push('--image', resolved);
+      } else {
+        log.warn('[ViduCLI图生] 参考图转公网 URL 失败，跳过', { image_gen_id, index: i, raw: String(rawRefs[i]).slice(0, 80) });
       }
-      args.push('--image', refUrl);
     }
   }
 

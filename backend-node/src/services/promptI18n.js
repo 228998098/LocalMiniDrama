@@ -1666,11 +1666,14 @@ function buildVideoProFiveSectionPrompt(args) {
     mode = slotCount >= 2 ? 'All-Reference' : 'First/Last Frame';
   }
 
-  // Assets Mapping：为每个 @图片N 补作用标签
+  // Assets Mapping：为每个 @图片N 补作用标签。
+  // 后端 reference_urls 仅为 URL 数组，无法可靠区分场景/角色/道具（全能模式顺序为场景→角色→道具，
+  // 但后端无从知晓确切边界）。故采用中性标注：第1张若标记为 scene 用「场景锚定」，其余用「参考素材」，
+  // 不把道具误标为角色。name 有值才写括号，避免空括号无信息量。
   const assetsLines = [];
   if (Array.isArray(imageSlots) && imageSlots.length > 0) {
     for (const slot of imageSlots) {
-      const role = slot.kind === 'scene' ? '场景锚定' : '身份锚定';
+      const role = slot.kind === 'scene' ? '场景锚定' : '参考素材';
       const note = slot.name ? `（${slot.name}）` : '';
       assetsLines.push(`- @image${slot.index}: ${role}${note}`);
     }
